@@ -1,3 +1,10 @@
 database/
 database
 .env
+__pycache__
+data/
+data
+*.pyc
+.pyc
+__pycache__/
+*.py[cod]

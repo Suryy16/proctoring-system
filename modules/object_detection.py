@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 import numpy as np
 
-model = YOLO("yolov8n.pt")  
+model = YOLO("model/yolov8n.pt")  
 
 def detect_objects(frame):
     results = model.predict(source=frame, imgsz=640, conf=0.4, verbose=False)
