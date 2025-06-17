@@ -16,14 +16,14 @@ def estimate_head_pose(landmarks, image_shape):
     image_points = np.array([
         landmarks[1],    # Nose tip
         landmarks[152],  # Chin
-        landmarks[33],   # Left eye
-        landmarks[263],  # Right eye
+        landmarks[33],   # Left eye left corner
+        landmarks[263],  # Right eye right corner
         landmarks[61],   # Left mouth
         landmarks[291]   # Right mouth
     ], dtype="double")
 
     focal_length = w
-    center = (w/2, h/2)
+    center = (w / 2, h / 2)
     camera_matrix = np.array([
         [focal_length, 0, center[0]],
         [0, focal_length, center[1]],
@@ -32,7 +32,26 @@ def estimate_head_pose(landmarks, image_shape):
 
     dist_coeffs = np.zeros((4,1))
     success, rotation_vector, _ = cv2.solvePnP(model_points, image_points, camera_matrix, dist_coeffs)
+    if not success:
+        return None, None  # Gagal
 
     rmat, _ = cv2.Rodrigues(rotation_vector)
-    pitch = -np.arcsin(rmat[1][2]) * (180 / np.pi)
-    return pitch
+
+    sy = np.sqrt(rmat[0, 0]**2 + rmat[1, 0]**2)
+
+    singular = sy < 1e-6
+
+    if not singular:
+        x = np.arctan2(rmat[2, 1], rmat[2, 2])  # roll
+        y = np.arctan2(-rmat[2, 0], sy)         # pitch
+        z = np.arctan2(rmat[1, 0], rmat[0, 0])  # yaw
+    else:
+        x = np.arctan2(-rmat[1, 2], rmat[1, 1])
+        y = np.arctan2(-rmat[2, 0], sy)
+        z = 0
+
+    pitch = y * 180 / np.pi
+    yaw = z * 180 / np.pi
+    roll = x * 180 / np.pi
+
+    return pitch, yaw  # bisa juga return pitch, yaw, roll
