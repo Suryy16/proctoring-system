@@ -3,7 +3,7 @@ import time
 import threading
 
 from recognition_scripts.dataset_processor import DatasetProcessor
-import recognition_scripts.face_utils as face_utils
+from recognition_scripts.face_utils import FaceRecognizer
 from modules.gaze_tracking import get_gaze_direction
 from modules.object_detection import detect_objects
 from modules.utils import (
@@ -59,7 +59,7 @@ while True:
     if frame_count % recognition_interval == 0:
         previous_results = []
         for (x, y, w, h) in faces:
-            identity, similarity = face_utils.recognize_face(frame, (x, y, w, h))
+            identity, similarity = FaceRecognizer.recognize_face(frame, (x, y, w, h))
             label = f"{identity} ({similarity * 100:.1f}%)" if identity != "Unknown" else "Unknown"
             previous_results.append(((x, y, w, h), label))
     else:

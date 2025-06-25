@@ -43,7 +43,8 @@ def get_gaze_direction(frame):
 
     # Head pose estimation
     landmark_px = {i: (int(face_landmarks[i].x * w), int(face_landmarks[i].y * h)) for i in [1, 152, 33, 263, 61, 291]}
-    pitch = estimate_head_pose(landmark_px, frame.shape)
+    pitch, _ = estimate_head_pose(landmark_px, frame.shape)
+
 
     # Debug
     #cv2.putText(frame, f"Pitch: {pitch:.2f}", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
