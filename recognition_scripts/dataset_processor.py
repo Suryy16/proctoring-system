@@ -68,58 +68,47 @@ class DatasetProcessor:
         return faces
 
     def process_dataset(self, dataset_path, output_path):
-        """Process the dataset and extract faces, maintaining folder structure"""
+        """Process a flat dataset folder and extract faces into output_path"""
         os.makedirs(output_path, exist_ok=True)
-        
+
         faces = []
         labels = []
-        
-        # Iterate through each person's folder
-        for person_name in os.listdir(dataset_path):
-            person_path = os.path.join(dataset_path, person_name)
-            if not os.path.isdir(person_path):
-                continue
-                
-            # Create corresponding output folder
-            person_output_path = os.path.join(output_path, person_name)
-            os.makedirs(person_output_path, exist_ok=True)
-            
-            # Process each image for this person
-            processed_count = 0
-            for img_name in tqdm(os.listdir(person_path), desc=f"Processing {person_name}"):
-                img_path = os.path.join(person_path, img_name)
-                
-                try:
-                    image = cv2.imread(img_path)
-                    if image is None:
-                        print(f"Could not read image: {img_path}")
-                        continue
-                        
-                    detected_faces = self.extract_faces(image)
-                    print(f"Found {len(detected_faces)} faces in {img_name}")
-                    
-                    for i, face in enumerate(detected_faces):
-                        if face.size == 0:
-                            print(f"Empty face detected in {img_name}")
-                            continue
-                            
-                        face_filename = f"{os.path.splitext(img_name)[0]}_{processed_count}.jpg"
-                        face_path = os.path.join(person_output_path, face_filename)
-                        
-                        if cv2.imwrite(face_path, face):
-                            processed_count += 1
-                            faces.append(face)
-                            labels.append(person_name)
-                        else:
-                            print(f"Failed to save face: {face_path}")
-                            
-                except Exception as e:
-                    print(f"Error processing {img_path}: {str(e)}")
 
-            print(f"Total processed for {person_name}: {processed_count}")
-                    
+        processed_count = 0
+        for img_name in tqdm(os.listdir(dataset_path), desc="Processing images"):
+            img_path = os.path.join(dataset_path, img_name)
+
+            try:
+                image = cv2.imread(img_path)
+                if image is None:
+                    print(f"Could not read image: {img_path}")
+                    continue
+
+                detected_faces = self.extract_faces(image)
+                print(f"Found {len(detected_faces)} faces in {img_name}")
+
+                for i, face in enumerate(detected_faces):
+                    if face.size == 0:
+                        print(f"Empty face detected in {img_name}")
+                        continue
+
+                    face_filename = f"{os.path.splitext(img_name)[0]}_{i}.jpg"
+                    face_path = os.path.join(output_path, face_filename)
+
+                    if cv2.imwrite(face_path, face):
+                        processed_count += 1
+                        faces.append(face)
+                        labels.append("Arya")  # or another label if needed
+                    else:
+                        print(f"Failed to save face: {face_path}")
+
+            except Exception as e:
+                print(f"Error processing {img_path}: {str(e)}")
+
+        print(f"Total faces extracted: {processed_count}")
         return faces, labels
+
     
 if __name__ == "__main__":
     data_processor = DatasetProcessor()
-    data_processor.process_dataset("database/dataset", "database/processed_dataset")
+    data_processor.process_dataset("database/dataset/225_Arya_Yudha_Kusuma_Pranata", "database/processed_dataset/test")

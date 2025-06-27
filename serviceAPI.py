@@ -26,7 +26,7 @@ import os
 load_dotenv()
 logger = logging.getLogger(__name__)
 app = FastAPI()
-ROOT_DATABASE_DIR = os.getenv('DATABASE_DIR')
+ROOT_DATABASE_DIR = os.getenv('ROOT_DATABASE_DIR')
 DEEPF_DATABASE_DIR = os.getenv('DEEPF_DATABASE_DIR')
 
 # Global objects
@@ -74,8 +74,8 @@ def register_face(
         base_dir = ROOT_DATABASE_DIR
         data_dir = DEEPF_DATABASE_DIR
         raw_data_dir = os.path.join(base_dir, "raw_data", safe_personName)
-        dataset_dir = os.path.join(base_dir, data_dir, safe_personName)
-        processed_dataset_dir = os.path.join(base_dir, "processed_dataset", safe_personName)
+        dataset_dir = os.path.join(base_dir, "dataset", safe_personName)
+        processed_dataset_dir = os.path.join(base_dir, DEEPF_DATABASE_DIR, safe_personName)
 
         # Create directories
         os.makedirs(raw_data_dir, exist_ok=True)
@@ -103,7 +103,7 @@ def register_face(
 
         # Extract frames from video
         try:
-            frames = processor.extract_uniform_frames(video_path, num_frames=28)
+            frames = extractor.extract_uniform_frames(video_path, num_frames=28)
             logger.info(f"Extracted {len(frames)} frames from video")
         except Exception as e:
             logger.error(f"Frame extraction failed: {str(e)}")
@@ -190,7 +190,7 @@ async def delete_face(
         base_dir = ROOT_DATABASE_DIR
         raw_path = os.path.join(base_dir, "raw_data", safe_personName)
         dataset_path = os.path.join(base_dir, "dataset", safe_personName)
-        processed_path = os.path.join(base_dir, "processed_dataset", safe_personName)
+        processed_path = os.path.join(base_dir, DEEPF_DATABASE_DIR, safe_personName)
 
         # Delete directories if they exist
         for path in [raw_path, dataset_path, processed_path]:
@@ -285,9 +285,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     current_objects = list(last_detected_objects)
 
                 alerts = []
+                # Proses hasil object detection
                 for label, conf, x1, y1, x2, y2 in current_objects:
                     if label in ["cell phone", "laptop", "remote"]:
-                        alerts.append({"type": "object", "label": label, "confidence": conf})
+                        cv2.putText(frame, f"{label} ({conf:.2f})", (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
                         save_log(name_status, f"Detected object: {label}", frame)
                         log_to_csv("Gadget Detected", label)
                         play_alarm()
