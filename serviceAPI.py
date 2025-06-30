@@ -221,9 +221,14 @@ async def delete_face(
 # Object detection thread
 def run_object_detection(frame):
     global last_detected_objects
-    detections = detect_objects(frame)
-    with yolo_lock:
-        last_detected_objects = detections
+    try:
+        detections = detect_objects(frame)
+        print(f"[YOLO DEBUG] Detected: {detections}")  # or use logger.info()
+        with yolo_lock:
+            last_detected_objects = detections
+    except Exception as e:
+        print(f"[YOLO ERROR] Failed: {e}")
+
 
 @app.websocket("/face-recognition")
 async def websocket_endpoint(websocket: WebSocket):
@@ -278,22 +283,37 @@ async def websocket_endpoint(websocket: WebSocket):
                     log_to_csv("Multiple Face", "More than 1 face detected")
                     play_alarm()
 
-                if frame_count % 10 == 0:
-                    threading.Thread(target=run_object_detection, args=(frame.copy(),)).start()
+                if frame_count % 15 == 0:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, run_object_detection, frame.copy())
 
                 with yolo_lock:
-                    current_objects = list(last_detected_objects)
+                    allowed_labels = ["cell phone", "laptop", "remote"]  # hanya ini yang kamu mau deteksi
+                    current_objects = [obj for obj in last_detected_objects if obj[0].lower() in allowed_labels]
 
                 alerts = []
-                # Proses hasil object detection
+                detected_objects = []  # to send to frontend
+
                 for label, conf, x1, y1, x2, y2 in current_objects:
-                    if label in ["cell phone", "laptop", "remote"]:
-                        cv2.putText(frame, f"{label} ({conf:.2f})", (x1, y1 - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        save_log(name_status, f"Detected object: {label}", frame)
+                    detected_objects.append({
+                        "label": label,
+                        "confidence": float(conf),
+                        "bbox": [int(x1), int(y1), int(x2), int(y2)]
+                    })
+
+                    # Deteksi objek mencurigakan
+                    if label.lower() in ["cell phone", "laptop", "remote"]:
+                        log_message = f"Detected object: {label}"
+                        save_log(name_status, log_message, frame)
                         log_to_csv("Gadget Detected", label)
                         play_alarm()
+
+                        alerts.append({
+                            "type": "object",
+                            "severity": "high",
+                            "label": label,
+                            "message": log_message
+                        })
 
                 if gaze in ["Looking Down", "Looking Down (Head)", "Looking Right", "Looking Left"]:
                     alerts.append({"type": "gaze", "direction": gaze})
@@ -316,7 +336,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "gaze": gaze,
                     "match_score": float(match_score),
                     "fps": fps,
-                    "alerts": alerts
+                    "alerts": alerts,
+                    "detected_objects": detected_objects
                 })
 
             except WebSocketDisconnect:

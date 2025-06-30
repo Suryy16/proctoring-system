@@ -91,31 +91,8 @@ if 'exam_logs' not in st.session_state:
 # API configuration
 API_BASE_URL = "http://localhost:5000"  # Update with your API URL
 
-# Sidebar - Exam Configuration
-with st.sidebar:
-    st.header("Exam Configuration")
-    exam_name = st.text_input("Exam Name", "Midterm Exam")
-    exam_duration = st.number_input("Duration (minutes)", min_value=1, value=60)
-    allowed_objects = st.multiselect(
-        "Allowed Objects",
-        ["None", "Pen", "Paper", "Calculator"],
-        default=["Pen", "Paper"]
-    )
-    
-    st.markdown("---")
-    st.header("System Status")
-    if st.session_state.recognition_active:
-        st.success("Proctoring Active")
-        if st.session_state.exam_start_time:
-            elapsed_time = time.time() - st.session_state.exam_start_time
-            remaining_time = max(0, exam_duration * 60 - elapsed_time)
-            minutes, seconds = divmod(int(remaining_time), 60)
-            st.metric("Time Remaining", f"{minutes:02d}:{seconds:02d}")
-    else:
-        st.warning("Proctoring Inactive")
-
 # Main Content - Tab Layout
-tab1, tab2, tab3, tab4 = st.tabs(["Registration", "Proctoring", "Alerts", "Reports"])
+tab1, tab2, tab3 = st.tabs(["Registration", "Proctoring", "Alerts"])
 
 with tab1:
     # Register Face Section
@@ -217,6 +194,23 @@ with tab1:
                         st.error(f"Network error: {str(e)}")
                     except Exception as e:
                         st.error(f"Unexpected error: {str(e)}")
+
+def stop_proctoring_session():
+    st.session_state.recognition_active = False
+    if st.session_state.websocket:
+        try:
+            asyncio.get_event_loop().run_until_complete(st.session_state.websocket.close())
+        except:
+            pass
+        st.session_state.websocket = None
+    if 'cap' in st.session_state:
+        st.session_state.cap.release()
+    st.session_state.exam_logs.append({
+        "timestamp": datetime.now().isoformat(),
+        "event": "session_end",
+        "duration_seconds": time.time() - st.session_state.exam_start_time
+    })
+
 with tab2:
     # Real-time Proctoring Section
     st.header("Live Proctoring")
@@ -295,24 +289,42 @@ with tab2:
                                 st.session_state.alerts.append(alert)
                                 st.session_state.exam_logs.append(alert)
                         
-                        if data.get("alerts"):
-                            for alert in data["alerts"]:
-                                if alert["type"] == "object":
-                                    st.session_state.metrics["object_detection"]["suspicious"] += 1
-                                    
-                                    # Log suspicious object
-                                    alert_obj = {
-                                        "timestamp": datetime.now().isoformat(),
-                                        "type": "object",
-                                        "severity": "high",
-                                        "message": f"Suspicious object detected: {alert['label']}",
-                                        "frame": cv2.imencode('.jpg', frame)[1].tobytes()
-                                    }
-                                    st.session_state.alerts.append(alert_obj)
-                                    st.session_state.exam_logs.append(alert_obj)
-                                else:
-                                    st.session_state.metrics["object_detection"]["allowed"] += 1
-                        
+                                if data.get("detected_objects"):
+                                    for obj in data["detected_objects"]:
+                                        label = obj["label"]
+                                        conf = obj["confidence"]
+                                        x1, y1, x2, y2 = obj["bbox"]
+
+                                        # Gambar bounding box
+                                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                                        cv2.putText(frame, f"{label} ({conf:.2f})", (x1, y1 - 10),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+                                # Proses semua alert dari backend
+                                if data.get("alerts"):
+                                    for alert_data in data["alerts"]:
+                                        alert_type = alert_data.get("type")
+                                        label = alert_data.get("label", "")
+                                        severity = alert_data.get("severity", "medium")
+                                        message = alert_data.get("message", "Suspicious behavior detected")
+
+                                        alert_obj = {
+                                            "timestamp": datetime.now().isoformat(),
+                                            "type": alert_type,
+                                            "severity": severity,
+                                            "message": message,
+                                            "frame": cv2.imencode('.jpg', frame)[1].tobytes()
+                                        }
+
+                                        st.session_state.alerts.append(alert_obj)
+                                        st.session_state.exam_logs.append(alert_obj)
+
+                                        # Update object detection metric (optional)
+                                        if alert_type == "object":
+                                            st.session_state.metrics["object_detection"]["suspicious"] += 1
+                                        elif alert_type == "gaze":
+                                            st.session_state.metrics["gaze_detection"]["abnormal"] += 1
+                    
                         # Display frame with annotations
                         if data.get("faces"):
                             for face in data["faces"]:
@@ -322,7 +334,7 @@ with tab2:
                                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                         
                         # Display frame
-                        video_placeholder.image(frame, channels="BGR", use_column_width=True)
+                        video_placeholder.image(frame, channels="BGR", use_container_width=True)
                         
                         # In the WebSocket result processing section (tab2):
                         match_score = data.get("match_score", 0)
@@ -374,7 +386,7 @@ with tab2:
                         
                     except asyncio.TimeoutError:
                         # Display frame even if no results yet
-                        video_placeholder.image(frame, channels="BGR", use_column_width=True)
+                        video_placeholder.image(frame, channels="BGR", use_container_width=True)
                         continue
                     
                     # Small delay to limit FPS
@@ -387,11 +399,15 @@ with tab2:
             st.session_state.websocket = None
             if 'cap' in st.session_state:
                 st.session_state.cap.release()
-            st.experimental_rerun()
+            st.rerun()
 
     # Start/stop proctoring controls
-    if not st.session_state.recognition_active:
-        if st.button("Start Proctoring Session", key="start_proctoring"):
+    if st.session_state.recognition_active:
+        if st.button("🛑 Stop Proctoring Session", key="stop_proctoring_live"):
+            stop_proctoring_session()
+            st.rerun()
+    else:
+        if st.button("▶️ Start Proctoring Session", key="start_proctoring"):
             st.session_state.recognition_active = True
             st.session_state.cap = get_video_capture()
             st.session_state.alerts = []
@@ -404,22 +420,11 @@ with tab2:
             st.session_state.exam_logs.append({
                 "timestamp": datetime.now().isoformat(),
                 "event": "session_start",
-                "exam_name": exam_name,
-                "duration_minutes": exam_duration
+                "exam_name": "Exam Session",
+                "duration_minutes": 60
             })
             asyncio.run(run_proctoring())
-    else:
-        if st.button("Stop Proctoring Session", key="stop_proctoring"):
-            st.session_state.recognition_active = False
-            if st.session_state.websocket:
-                asyncio.get_event_loop().run_until_complete(st.session_state.websocket.close())
-            st.session_state.cap.release()
-            st.session_state.exam_logs.append({
-                "timestamp": datetime.now().isoformat(),
-                "event": "session_end",
-                "duration_seconds": time.time() - st.session_state.exam_start_time
-            })
-            st.experimental_rerun()
+
 
 with tab3:
     # Alerts Dashboard
@@ -430,86 +435,133 @@ with tab3:
     else:
         st.warning(f"🚨 {len(st.session_state.alerts)} suspicious events detected")
         
-        for i, alert in enumerate(st.session_state.alerts[-10:][::-1]):  # Show last 10 alerts, newest first
-            with st.expander(f"{i+1}. {alert['message']} - {alert['timestamp']}"):
+        # Filter and display alerts by type
+        alert_types = list(set(alert.get('type', 'unknown') for alert in st.session_state.alerts))
+        selected_types = st.multiselect(
+            "Filter by alert type",
+            options=alert_types,
+            default=alert_types
+        )
+        
+        # Filter by severity if available
+        severities = list(set(alert.get('severity', 'medium') for alert in st.session_state.alerts if 'severity' in alert))
+        if severities:
+            selected_severities = st.multiselect(
+                "Filter by severity",
+                options=severities,
+                default=severities
+            )
+        else:
+            selected_severities = severities
+        
+        # Apply filters
+        filtered_alerts = [
+            alert for alert in st.session_state.alerts
+            if alert.get('type', 'unknown') in selected_types and
+            alert.get('severity', 'medium') in selected_severities
+        ]
+        
+        st.write(f"Showing {len(filtered_alerts)} filtered alerts")
+        
+        for i, alert in enumerate(filtered_alerts[-20:][::-1]):  # Show last 20 alerts, newest first
+            with st.expander(f"{i+1}. {alert.get('type', 'Alert').title()} - {alert.get('timestamp', 'No timestamp')}"):
                 col1, col2 = st.columns([1, 2])
                 
                 with col1:
-                    # Display the alert frame
-                    img = cv2.imdecode(np.frombuffer(alert['frame'], cv2.IMREAD_COLOR))
-                    st.image(img, channels="BGR", caption="Alert Frame")
+                    # Display the alert frame if available
+                    if 'frame' in alert:
+                        try:
+                            img_array = np.frombuffer(alert['frame'], dtype=np.uint8)
+                            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                            st.image(img, channels="BGR", caption="Alert Frame")
+                        except Exception as e:
+                            st.error(f"Failed to load image: {str(e)}")
+                    else:
+                        st.info("No frame available for this alert")
                 
                 with col2:
                     # Alert details
-                    st.markdown(f"""
-                    **Timestamp:** {alert['timestamp']}  
-                    **Type:** {alert['type'].title()}  
-                    **Severity:** {alert['severity'].title()}  
-                    **Message:** {alert['message']}
-                    """)
+                    details = [
+                        f"**Timestamp:** {alert.get('timestamp', 'Unknown')}",
+                        f"**Type:** {alert.get('type', 'Unknown').title()}",
+                        f"**Severity:** {alert.get('severity', 'medium').title()}"
+                    ]
+
+                    # Show alert status badges
+                    status_badges = []
+                    if alert.get("acknowledged"):
+                        status_badges.append("✅ Acknowledged")
+                    if alert.get("flagged"):
+                        status_badges.append("🚩 Flagged")
+
+                    if status_badges:
+                        st.markdown("**Status:** " + ", ".join(status_badges))
                     
-                    # Add action buttons
-                    if st.button("Acknowledge", key=f"ack_{i}"):
+                    # Add specific details based on alert type
+                    if alert['type'] == 'object':
+                        details.append(f"**Object:** {alert.get('label', 'Unknown object')}")
+                        details.append(f"**Message:** {alert.get('message', 'Suspicious object detected')}")
+                    elif alert['type'] == 'gaze':
+                        details.append(f"**Direction:** {alert.get('direction', alert.get('message', 'Unknown direction'))}")
+                    else:
+                        details.append(f"**Message:** {alert.get('message', 'No additional details')}")
+                    
+                    st.markdown("\n".join(details))
+                    
+                    # Action buttons
+                    col_ack, col_flag, col_del = st.columns(3)
+                    
+                    with col_ack:
+                        if st.button("Acknowledge", key=f"ack_{i}"):
+                            st.session_state.alerts[i]["acknowledged"] = True
+                            st.success("Alert acknowledged")
+                            time.sleep(0.5)
+                            st.rerun()
+                    
+                    with col_flag:
+                        if st.button("Flag for Review", key=f"flag_{i}"):
+                            st.session_state.alerts[i]["flagged"] = True
+                            st.warning("Alert flagged for review")
+                            time.sleep(0.5)
+                            st.rerun()
+                    
+                    with col_del:
+                        if st.button("Delete", key=f"del_{i}"):
+                            del st.session_state.alerts[i]
+                            st.error("Alert deleted")
+                            time.sleep(0.5)
+                            st.rerun()
+        
+        # Add bulk actions at the bottom
+        st.markdown("---")
+        st.subheader("Bulk Actions")
+        
+        col_bulk1, col_bulk2, col_bulk3 = st.columns(3)
+        
+        with col_bulk1:
+            if st.button("Acknowledge All Filtered"):
+                for i, alert in enumerate(st.session_state.alerts):
+                    if alert in filtered_alerts:
                         st.session_state.alerts[i]["acknowledged"] = True
-                        st.success("Alert acknowledged")
-                        st.experimental_rerun()
-                    
-                    if st.button("Flag for Review", key=f"flag_{i}"):
+                st.success(f"Acknowledged {len(filtered_alerts)} alerts")
+                time.sleep(0.5)
+                st.rerun()
+        
+        with col_bulk2:
+            if st.button("Flag All Filtered"):
+                for i, alert in enumerate(st.session_state.alerts):
+                    if alert in filtered_alerts:
                         st.session_state.alerts[i]["flagged"] = True
-                        st.warning("Alert flagged for review")
-                        st.experimental_rerun()
-
-with tab4:
-    # Reporting Section
-    st.header("Exam Session Reports")
-    
-    if not st.session_state.exam_logs:
-        st.info("No exam data available yet. Start a proctoring session to generate reports.")
-    else:
-        # Convert logs to DataFrame for display
-        df_logs = pd.DataFrame(st.session_state.exam_logs)
+                st.warning(f"Flagged {len(filtered_alerts)} alerts for review")
+                time.sleep(0.5)
+                st.rerun()
         
-        # Filter out frame data for display
-        display_logs = df_logs.drop(columns=['frame'], errors='ignore')
-        
-        # Show summary metrics
-        st.subheader("Session Summary")
-        col1, col2, col3 = st.columns(3)
-        
-        # Calculate metrics
-        total_alerts = len([log for log in st.session_state.exam_logs if log.get('type') in ['gaze', 'object']])
-        gaze_alerts = len([log for log in st.session_state.exam_logs if log.get('type') == 'gaze'])
-        object_alerts = len([log for log in st.session_state.exam_logs if log.get('type') == 'object'])
-        
-        col1.metric("Total Alerts", total_alerts)
-        col2.metric("Gaze Alerts", gaze_alerts)
-        col3.metric("Object Alerts", object_alerts)
-        
-        # Show detailed logs
-        st.subheader("Detailed Logs")
-        st.dataframe(display_logs)
-        
-        # Export options
-        st.subheader("Export Report")
-        
-        if st.button("Generate CSV Report"):
-            csv = df_logs.to_csv(index=False)
-            st.download_button(
-                label="Download CSV",
-                data=csv,
-                file_name=f"proctoring_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-        
-        if st.button("Generate JSON Report"):
-            json_report = df_logs.to_json(orient='records', indent=2)
-            st.download_button(
-                label="Download JSON",
-                data=json_report,
-                file_name=f"proctoring_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json"
-            )
-
+        with col_bulk3:
+            if st.button("Clear All Alerts"):
+                st.session_state.alerts = []
+                st.error("All alerts cleared")
+                time.sleep(0.5)
+                st.rerun()
 # Clean up on app exit
 def cleanup():
     if 'cap' in st.session_state:
