@@ -11,7 +11,8 @@ from modules.head_pose import estimate_head_pose
 from modules.feature_logger import save_features
 from modules.face_recognition import detect_faces
 from recognition_scripts.dataset_processor import DatasetProcessor
-import recognition_scripts.face_utils as face_utils
+import recognition_scripts.face_utils as FaceRecognizer
+from modules.gaze_tracking import get_gaze_direction
 from modules.object_detection import detect_objects
 from modules.utils import (
     save_log,
@@ -66,7 +67,7 @@ while True:
     if frame_count % recognition_interval == 0:
         previous_results = []
         for (x, y, w, h) in faces:
-            identity, similarity = face_utils.recognize_face(frame, (x, y, w, h))
+            identity, similarity = FaceRecognizer.recognize_face(frame, (x, y, w, h))
             label = f"{identity} ({similarity * 100:.1f}%)" if identity != "Unknown" else "Unknown"
             previous_results.append(((x, y, w, h), label))
     else:
