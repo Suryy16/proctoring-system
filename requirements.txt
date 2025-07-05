@@ -1,0 +1,11 @@
+opencv-python
+numpy
+joblib
+scikit-learn
+dlib
+face-recognition
+imutils
+pandas
+torch
+torchvision
+ultralytics

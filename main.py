@@ -1,10 +1,17 @@
 import cv2
 import time
 import threading
+import joblib
+import os
 
+# Modules
+from modules.gaze_tracking import get_gaze_direction
+from modules.gaze_paper import get_eye_gaze_ratios
+from modules.head_pose import estimate_head_pose
+from modules.feature_logger import save_features
+from modules.face_recognition import detect_faces
 from recognition_scripts.dataset_processor import DatasetProcessor
 import recognition_scripts.face_utils as face_utils
-from modules.gaze_tracking import get_gaze_direction
 from modules.object_detection import detect_objects
 from modules.utils import (
     save_log,
@@ -13,23 +20,26 @@ from modules.utils import (
     calculate_face_match_score
 )
 
-# Inisialisasi kamera
+# Load model
+MODEL_PATH = "D:\\sursat\\kuliah\\Semester 6\\PKL SE\\proctoring-system\\models\\model_rf.pkl"
+USE_PREDICTION = os.path.exists(MODEL_PATH)
+model = joblib.load(MODEL_PATH) if USE_PREDICTION else None
+
+# Initialize camera
 cap = cv2.VideoCapture(0)
 cap.set(3, 640)
 cap.set(4, 480)
 
-# Inisialisasi detektor wajah (YOLO + face recognition)
-detector = DatasetProcessor()
 frame_count = 0
-recognition_interval = 5
-previous_results = []
-
 face_reference = None
 last_detected_objects = []
 yolo_lock = threading.Lock()
 prev_time = 0
+recognition_interval = 5
+previous_results = []
 
-# Fungsi deteksi objek (non-blocking)
+detector = DatasetProcessor()
+
 def run_object_detection(frame):
     global last_detected_objects
     detections = detect_objects(frame)
@@ -45,17 +55,14 @@ while True:
     faces = detector.detect_faces(frame)
     face_roi = None
 
-    # Ambil ROI wajah pertama (jika ada) untuk referensi
     if faces:
         x, y, w, h = faces[0]
         face_roi = frame[y:y+h, x:x+w]
-
         if face_reference is None:
             face_reference = face_roi.copy()
 
     match_score = calculate_face_match_score(face_reference, face_roi)
 
-    # Lakukan pengenalan wajah setiap N frame
     if frame_count % recognition_interval == 0:
         previous_results = []
         for (x, y, w, h) in faces:
@@ -66,10 +73,37 @@ while True:
         if len(previous_results) != len(faces):
             previous_results = [((x, y, w, h), "Unknown") for (x, y, w, h) in faces]
 
-    # Deteksi arah pandangan
+    hr, vr = get_eye_gaze_ratios(frame)
+    pitch = yaw = None
+    label = "Unknown"
     gaze = get_gaze_direction(frame)
 
-    # Deteksi kondisi wajah
+    if hr is not None and vr is not None:
+        if faces:
+            x, y, w, h = faces[0]
+            face_landmarks = {
+                1: (x + w // 2, y + h // 2),
+                152: (x + w // 2, y + h),
+                33: (x, y + h // 3),
+                263: (x + w, y + h // 3),
+                61: (x + w // 3, y + (2 * h) // 3),
+                291: (x + (2 * w) // 3, y + (2 * h) // 3),
+            }
+            pitch, yaw = estimate_head_pose(face_landmarks, frame.shape)
+
+        save_features(hr, vr, pitch if pitch else 0, yaw)
+
+        if USE_PREDICTION and pitch is not None and yaw is not None:
+            pred = model.predict([[hr, vr, pitch, yaw]])[0]
+            label = "CHEATING" if pred == 1 else "OK"
+            if label == "CHEATING":
+                save_log(label, f"Predicted {label}", frame)
+                log_to_csv("ML Cheating", "Predicted Cheating")
+                play_alarm()
+        else:
+            label = "Logged Only"
+
+    name_status = "Unknown"
     if len(faces) == 0:
         name_status = "Unknown"
     elif len(faces) == 1:
@@ -80,47 +114,52 @@ while True:
         log_to_csv("Multiple Face", "More than 1 face detected")
         play_alarm()
 
-    # Jalankan YOLO setiap 10 frame
     if frame_count % 10 == 0:
         threading.Thread(target=run_object_detection, args=(frame.copy(),)).start()
 
     with yolo_lock:
         current_objects = list(last_detected_objects)
 
-    # Proses hasil object detection
-    for label, conf, x1, y1, x2, y2 in current_objects:
-        if label in ["cell phone", "laptop", "remote"]:
-            cv2.putText(frame, f"{label} ({conf:.2f})", (x1, y1 - 10),
+    for label_obj, conf, x1, y1, x2, y2 in current_objects:
+        if label_obj in ["cell phone", "laptop", "remote"]:
+            cv2.putText(frame, f"{label_obj} ({conf:.2f})", (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            save_log(name_status, f"Detected object: {label}", frame)
-            log_to_csv("Gadget Detected", label)
+            save_log(name_status, f"Detected object: {label_obj}", frame)
+            log_to_csv("Gadget Detected", label_obj)
             play_alarm()
 
-    # Deteksi arah pandangan mencurigakan
     if gaze in ["Looking Down", "Looking Down (Head)", "Looking Right", "Looking Left"]:
         save_log(name_status, gaze, frame)
         log_to_csv("Gaze Cheating", gaze)
         play_alarm()
 
-    # Tampilkan informasi
     cv2.putText(frame, f"Status: {name_status}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-    cv2.putText(frame, f"Gaze: {gaze}", (10, 60),
+    cv2.putText(frame, f"ML: {label}", (10, 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                (0, 0, 255) if label == "CHEATING" else (0, 255, 0), 2)
+    cv2.putText(frame, f"Gaze: {gaze}", (10, 70),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-    cv2.putText(frame, f"Match Score: {match_score:.2f}%", (10, 90),
+    if pitch is not None:
+        cv2.putText(frame, f"Pitch: {pitch:.2f}", (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+    if yaw is not None:
+        cv2.putText(frame, f"Yaw: {yaw:.2f}", (10, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+    cv2.putText(frame, f"Match Score: {match_score:.2f}%", (10, 130),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
     curr_time = time.time()
     fps = 1 / (curr_time - prev_time) if curr_time - prev_time > 0 else 0
     prev_time = curr_time
-    cv2.putText(frame, f"FPS: {int(fps)}", (10, 120),
+    cv2.putText(frame, f"FPS: {int(fps)}", (10, 150),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
     for i, (x, y, w, h) in enumerate(faces):
         cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 255), 2)
-        label = previous_results[i][1] if i < len(previous_results) else "Unknown"
-        cv2.putText(frame, label, (x, y - 10),
+        label_display = previous_results[i][1] if i < len(previous_results) else "Unknown"
+        cv2.putText(frame, label_display, (x, y - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
     cv2.imshow("AI Proctoring System", frame)
