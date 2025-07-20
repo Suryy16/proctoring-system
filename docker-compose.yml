@@ -1,0 +1,41 @@
+services:
+  proctoring-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./database:/app/database
+      - ./modules:/app/modules
+      - ./recognition_scripts:/app/recognition_scripts
+      - ./logs:/app/logs
+    environment:
+      - ROOT_DATABASE_DIR=/app/database
+      - DEEPF_DATABASE_DIR=processed_dataset
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; exit(0) if urllib.request.urlopen('http://localhost:5000/health').getcode() == 200 else exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  proctoring-ui:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ui
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./streamlit_app.py:/app/streamlit_app.py
+      - ./database:/app/database
+      - ./modules:/app/modules
+      - ./recognition_scripts:/app/recognition_scripts
+    depends_on:
+      proctoring-api:
+        condition: service_healthy
+    environment:
+      - ROOT_DATABASE_DIR=/app/database
+      - DEEPF_DATABASE_DIR=processed_dataset
+    restart: unless-stopped
