@@ -12,6 +12,12 @@ import asyncio
 import pandas as pd
 from datetime import datetime
 
+
+IS_DOCKER = os.getenv('IS_DOCKER', 'false').lower() == 'true'
+CAMERA_INDEX = int(os.getenv('CAMERA_INDEX', '0'))
+WEBSOCKET_HOST = os.getenv('WEBSOCKET_HOST', 'localhost')
+API_HOST = os.getenv('API_HOST', 'localhost')
+
 # Set page config
 st.set_page_config(
     page_title="Exam Proctoring System",
@@ -217,14 +223,23 @@ with tab2:
     
     # Initialize video capture
     def get_video_capture():
-        return cv2.VideoCapture(0)
+        if IS_DOCKER:
+            # Try multiple camera indices
+            for i in range(3):
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    return cap
+            # Fallback to test video
+            print("Error accessing camera")
+        else:
+            return cv2.VideoCapture(CAMERA_INDEX)
 
     if 'cap' not in st.session_state:
         st.session_state.cap = get_video_capture()
 
     # WebSocket connection for real-time proctoring
     async def run_proctoring():
-        ws_url = f"ws://localhost:5000/face-recognition"
+        ws_url = f"ws://{WEBSOCKET_HOST}:5000/face-recognition" if IS_DOCKER else "ws://localhost:5000/face-recognition"
         
         try:
             async with websockets.connect(ws_url) as websocket:

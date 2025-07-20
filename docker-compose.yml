@@ -38,4 +38,11 @@ services:
     environment:
       - ROOT_DATABASE_DIR=/app/database
       - DEEPF_DATABASE_DIR=processed_dataset
+      - IS_DOCKER=true
+      - CAMERA_INDEX=0
+      - WEBSOCKET_HOST=proctoring-api
+      - API_HOST=proctoring-api
     restart: unless-stopped
+    devices:
+      - "/dev/video0:/dev/video0"  # Add this line
+    privileged: true 
