@@ -345,7 +345,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
     finally:
         await websocket.close()
-
+        
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
 # app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":

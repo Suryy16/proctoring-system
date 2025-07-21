@@ -3,6 +3,10 @@ import time
 import threading
 import joblib
 import os
+import torch
+import torch.nn as nn
+import torchvision.models as models
+import numpy as np
 
 # Modules
 from modules.gaze_tracking import get_gaze_direction
@@ -21,10 +25,38 @@ from modules.utils import (
     calculate_face_match_score
 )
 
-# Load model
-MODEL_PATH = "D:\\sursat\\kuliah\\Semester 6\\PKL SE\\proctoring-system\\models\\model_rf.pkl"
-USE_PREDICTION = os.path.exists(MODEL_PATH)
-model = joblib.load(MODEL_PATH) if USE_PREDICTION else None
+# Define CNN model class
+class TransferCNN(nn.Module):
+    def __init__(self, num_classes=2, pretrained=True):
+        super(TransferCNN, self).__init__()
+        self.backbone = models.resnet18(pretrained=pretrained)
+        num_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(num_features, num_classes)
+        )
+
+    def forward(self, x):
+        return self.backbone(x)
+
+# Load models with CNN as primary and Random Forest as fallback
+CNN_MODEL_PATH = "model/transfer_learning_cnn.pth"
+SCALER_PATH = "model/scaler.pkl"
+USE_CNN = os.path.exists(CNN_MODEL_PATH) and os.path.exists(SCALER_PATH)
+
+if USE_CNN:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    cnn_model = TransferCNN(num_classes=2, pretrained=False)
+    cnn_model.load_state_dict(torch.load(CNN_MODEL_PATH, map_location=device))
+    cnn_model.eval()
+    scaler = joblib.load(SCALER_PATH)
+    print("✅ Transfer Learning CNN model loaded")
+else:
+    # Fallback to Random Forest
+    MODEL_PATH = "D:\\sursat\\kuliah\\Semester 6\\PKL SE\\proctoring-system\\models\\model_rf.pkl"
+    USE_PREDICTION = os.path.exists(MODEL_PATH)
+    model = joblib.load(MODEL_PATH) if USE_PREDICTION else None
+    print("⚠️ Using Random Forest fallback")
 
 # Initialize camera
 cap = cv2.VideoCapture(0)
@@ -94,12 +126,39 @@ while True:
 
         save_features(hr, vr, pitch if pitch else 0, yaw)
 
-        if USE_PREDICTION and pitch is not None and yaw is not None:
+        # CNN Prediction
+        if USE_CNN and pitch is not None and yaw is not None:
+            try:
+                features = np.array([[hr, vr, pitch, yaw]], dtype=np.float32)
+                features = scaler.transform(features)
+                features = torch.tensor(features, dtype=torch.float32).to(device)
+                
+                with torch.no_grad():
+                    outputs = cnn_model(features)
+                    probabilities = torch.softmax(outputs, dim=1)
+                    _, predicted = torch.max(outputs, 1)
+                
+                prediction = predicted.cpu().numpy()[0]
+                confidence = probabilities.cpu().numpy()[0][prediction]
+                
+                label = f"CNN: {'CHEATING' if prediction == 1 else 'OK'} ({confidence:.2f})"
+                
+                if prediction == 1:
+                    save_log(label, f"CNN: Cheating detected (confidence: {confidence:.2f})", frame)
+                    log_to_csv("ML Cheating", "CNN predicted Cheating")
+                    play_alarm()
+                    
+            except Exception as e:
+                print(f"CNN prediction error: {e}")
+                label = "CNN Error"
+        
+        # Fallback to Random Forest if CNN not available
+        elif USE_PREDICTION and pitch is not None and yaw is not None:
             pred = model.predict([[hr, vr, pitch, yaw]])[0]
-            label = "CHEATING" if pred == 1 else "OK"
-            if label == "CHEATING":
-                save_log(label, f"Predicted {label}", frame)
-                log_to_csv("ML Cheating", "Predicted Cheating")
+            label = f"RF: {'CHEATING' if pred == 1 else 'OK'}"
+            if pred == 1:
+                save_log(label, "RF: Cheating detected", frame)
+                log_to_csv("ML Cheating", "RF predicted Cheating")
                 play_alarm()
         else:
             label = "Logged Only"
@@ -135,11 +194,12 @@ while True:
         log_to_csv("Gaze Cheating", gaze)
         play_alarm()
 
+    # Display information on frame
     cv2.putText(frame, f"Status: {name_status}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
     cv2.putText(frame, f"ML: {label}", (10, 50),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                (0, 0, 255) if label == "CHEATING" else (0, 255, 0), 2)
+                (0, 0, 255) if "CHEATING" in label else (0, 255, 0), 2)
     cv2.putText(frame, f"Gaze: {gaze}", (10, 70),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     if pitch is not None:
