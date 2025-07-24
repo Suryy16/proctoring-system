@@ -7,14 +7,18 @@ import time
 from fastapi import FastAPI, File, Form, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import torch
+import torch.nn as nn
+from torchvision import transforms
+import torchvision.models as models
+import joblib
+import numpy as np
 import logging
 from deepface import DeepFace
 from modules.gaze_tracking import get_gaze_direction
 from modules.object_detection import detect_objects
 from modules.utils import calculate_face_match_score, log_to_csv, play_alarm, save_log
-
 import numpy as np
-
 from recognition_scripts.dataset_processor import DatasetProcessor
 from recognition_scripts.video_to_dataset import VideoFrameExtractor
 from recognition_scripts.face_utils import FaceRecognizer
@@ -23,12 +27,50 @@ from dotenv import load_dotenv
 import os
 
 
+
+
 load_dotenv()
 logger = logging.getLogger(__name__)
-app = FastAPI()
 ROOT_DATABASE_DIR = os.getenv('ROOT_DATABASE_DIR')
 DEEPF_DATABASE_DIR = os.getenv('DEEPF_DATABASE_DIR')
+# Define CNN model class
+# Define CNN model class (updated for image input)
+class TransferCNN(nn.Module):
+    def __init__(self, num_classes=2, pretrained=True):
+        super(TransferCNN, self).__init__()
+        self.backbone = models.resnet18(pretrained=pretrained)
+        num_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(num_features, num_classes)
+        )
+    def forward(self, x):
+        return self.backbone(x)
 
+# Load model (remove scaler)
+CNN_MODEL_PATH = os.path.join("model", "transfer_learning_cnn.pth")
+USE_CNN = os.path.exists(CNN_MODEL_PATH)
+
+if USE_CNN:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    cnn_model = TransferCNN(num_classes=2, pretrained=False)
+    cnn_model.load_state_dict(torch.load(CNN_MODEL_PATH, map_location=device))
+    cnn_model.eval()
+    logger.info("✅ Image-based CNN model loaded")
+    
+    # Image preprocessing transform
+    transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                             std=[0.229, 0.224, 0.225])
+    ])
+else:
+    logger.warning("⚠️ CNN model not found, using fallback methods")
+
+app = FastAPI()
 # Global objects
 frame_processor = DatasetProcessor()
 yolo_lock = threading.Lock()
@@ -252,12 +294,39 @@ async def websocket_endpoint(websocket: WebSocket):
                 frame_count += 1
                 faces = frame_processor.detect_faces(frame)
                 face_roi = None
+                ml_label = "No Face for ML"
 
                 if faces:
                     x, y, w, h = faces[0]
                     face_roi = frame[y:y+h, x:x+w]
                     if face_reference is None:
                         face_reference = face_roi.copy()
+
+                    # CNN Prediction (using face ROI)
+                    if USE_CNN:
+                        try:
+                            # Preprocess image
+                            input_tensor = transform(cv2.cvtColor(face_roi, cv2.COLOR_BGR2RGB))
+                            input_batch = input_tensor.unsqueeze(0).to(device)
+                            
+                            # Inference
+                            with torch.no_grad():
+                                outputs = cnn_model(input_batch)
+                                probabilities = torch.softmax(outputs, dim=1)
+                                _, predicted = torch.max(outputs, 1)
+                            
+                            prediction = predicted.item()
+                            confidence = probabilities[0][prediction].item()
+                            
+                            ml_label = f"CNN: {'CHEATING' if prediction == 1 else 'OK'} ({confidence:.2f})"
+                            
+                            if prediction == 1:
+                                save_log("CNN Prediction", f"Cheating detected (confidence: {confidence:.2f})", frame)
+                                log_to_csv("ML Cheating", "CNN predicted Cheating")
+                                play_alarm()
+                        except Exception as e:
+                            logger.error(f"CNN prediction error: {e}")
+                            ml_label = "CNN Error"
 
                 match_score = calculate_face_match_score(face_reference, face_roi)
 
@@ -288,11 +357,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     await loop.run_in_executor(None, run_object_detection, frame.copy())
 
                 with yolo_lock:
-                    allowed_labels = ["cell phone", "laptop", "remote"]  # hanya ini yang kamu mau deteksi
+                    allowed_labels = ["cell phone", "laptop", "remote"]
                     current_objects = [obj for obj in last_detected_objects if obj[0].lower() in allowed_labels]
 
                 alerts = []
-                detected_objects = []  # to send to frontend
+                detected_objects = []
 
                 for label, conf, x1, y1, x2, y2 in current_objects:
                     detected_objects.append({
@@ -301,13 +370,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         "bbox": [int(x1), int(y1), int(x2), int(y2)]
                     })
 
-                    # Deteksi objek mencurigakan
                     if label.lower() in ["cell phone", "laptop", "remote"]:
                         log_message = f"Detected object: {label}"
                         save_log(name_status, log_message, frame)
                         log_to_csv("Gadget Detected", label)
                         play_alarm()
-
                         alerts.append({
                             "type": "object",
                             "severity": "high",
@@ -316,7 +383,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
 
                 if gaze in ["Looking Down", "Looking Down (Head)", "Looking Right", "Looking Left"]:
-                    alerts.append({"type": "gaze", "direction": gaze})
+                    alerts.append({
+                        "type": "gaze", 
+                        "direction": gaze,
+                        "severity": "medium",
+                        "message": f"Abnormal gaze detected: {gaze}"
+                    })
                     save_log(name_status, gaze, frame)
                     log_to_csv("Gaze Cheating", gaze)
                     play_alarm()
@@ -335,12 +407,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     ],
                     "gaze": gaze,
                     "match_score": float(match_score),
+                    "ml_prediction": ml_label,
                     "fps": fps,
                     "alerts": alerts,
                     "detected_objects": detected_objects
                 })
 
+            except asyncio.TimeoutError:
+                continue
             except WebSocketDisconnect:
+                break
+            except Exception as e:
+                logger.error(f"WebSocket processing error: {str(e)}", exc_info=True)
                 break
 
     finally:
