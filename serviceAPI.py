@@ -340,7 +340,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 match_score = calculate_face_match_score(face_reference, face_roi)
 
-                if frame_count % recognition_interval == 0:
+                if frame_count % recognition_interval == 0 or not previous_results:
                     previous_results = []
                     for (x, y, w, h) in faces:
                         identity, similarity = FaceRecognizer.recognize_face(frame, (x, y, w, h))
