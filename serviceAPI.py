@@ -1,4 +1,5 @@
 import asyncio
+from asyncio.log import logger
 from collections import deque
 import json
 import shutil
@@ -30,7 +31,10 @@ import os
 
 
 load_dotenv()
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 ROOT_DATABASE_DIR = os.getenv('ROOT_DATABASE_DIR')
 DEEPF_DATABASE_DIR = os.getenv('DEEPF_DATABASE_DIR')
 # Define CNN model class
@@ -284,7 +288,13 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             try:
-                data = await websocket.receive_bytes()
+                data = await asyncio.wait_for(
+                    websocket.receive_bytes(),
+                    timeout=5.0  # Add timeout
+                )
+                # Basic validation
+                if len(data) < 10:  # Minimum expected image size
+                    raise WebSocketDisconnect(1008, "Invalid frame data")
                 nparr = np.frombuffer(data, np.uint8)
                 frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -334,8 +344,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     previous_results = []
                     for (x, y, w, h) in faces:
                         identity, similarity = FaceRecognizer.recognize_face(frame, (x, y, w, h))
+                        # logger.info(f"log identitas: {identity} {similarity}")
+                        # print(f"DEBUG - identitas: {identity} similarity: {similarity}")
                         label = f"{identity} ({similarity * 100:.1f}%)" if identity != "Unknown" else "Unknown"
-                        previous_results.append(((x, y, w, h), label))
+                        previous_results.append(((x, y, w, h), label))       
                 else:
                     if len(previous_results) != len(faces):
                         previous_results = [((x, y, w, h), "Unknown") for (x, y, w, h) in faces]
