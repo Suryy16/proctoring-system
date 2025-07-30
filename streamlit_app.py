@@ -19,10 +19,16 @@ from queue import Queue
 import concurrent.futures
 from functools import partial
 from collections import deque  # Add this import too
+from dotenv import load_dotenv
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+if os.path.exists('.env.local'):
+    load_dotenv('.env.local')  # Development mode
+else:
+    load_dotenv()  # Production mode
 
 IS_DOCKER = os.getenv('IS_DOCKER', 'false').lower() == 'true'
 CAMERA_INDEX = int(os.getenv('CAMERA_INDEX', '0'))
@@ -142,26 +148,22 @@ def start_proctoring_session():
 
 def get_video_capture():
     """Initialize camera with optimized settings for higher FPS"""
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)  # Use DirectShow for Windows
+    if IS_DOCKER:
+        # In Docker (not applicable for UI-only local mode)
+        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+    else:
+        # Local development - direct camera access
+        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)  # Windows
     
     if cap.isOpened():
-        # Reduce resolution for better performance
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Reduced from higher resolutions
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        
-        # Set MJPG codec which is typically faster
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-        
-        # Request higher FPS (may not be supported by all cameras)
         cap.set(cv2.CAP_PROP_FPS, 30)
-        
-        # Reduce buffer size to minimize latency
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
-        # Disable auto-focus and other auto-settings that cause delays
         cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # 1 = manual
-        cap.set(cv2.CAP_PROP_AUTO_WB, 0)  # Disable auto white balance
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        cap.set(cv2.CAP_PROP_AUTO_WB, 0)
     return cap
 
 def camera_thread(stop_event):
@@ -420,14 +422,15 @@ if 'metrics' not in st.session_state:
 class CameraStream:
     def __init__(self, src=0):
         self.stream = cv2.VideoCapture(src, cv2.CAP_DSHOW)
-        self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Lower resolution
         self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.stream.set(cv2.CAP_PROP_FPS, 30)
         self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-        self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-        (self.grabbed, self.frame) = self.stream.read()
+        self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Smaller buffer
+        self.grabbed = False
+        self.frame = None
         self.stopped = False
-        self.Q = queue.Queue(maxsize=32)  # Smaller queue for lower latency
+        self.Q = queue.Queue(maxsize=1)  # Minimal queue size for lowest latency
 
     def start(self):
         Thread(target=self.update, args=()).start()
@@ -473,7 +476,8 @@ async def run_proctoring():
         
         async with websockets.connect(ws_url) as websocket:
             st.session_state.websocket = websocket
-            
+            processing_width, processing_height = 320, 240
+        
             while st.session_state.recognition_active:
                 start_time = time.time()
                 
@@ -485,8 +489,10 @@ async def run_proctoring():
                 fps = len(frame_times) / (frame_times[-1] - frame_times[0]) if len(frame_times) > 1 else 0
                 
                 # Process at reduced resolution
-                small_frame = cv2.resize(frame, (320, 240))
-                _, buffer = cv2.imencode('.jpg', small_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                small_frame = cv2.resize(frame, (processing_width, processing_height))
+                
+                # Lower JPEG quality for smaller payload
+                _, buffer = cv2.imencode('.jpg', small_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
                 
                 try:
                     # Send frame with timeout
@@ -613,16 +619,27 @@ def update_display(frame, data, status_info, video_placeholder, status_display, 
     # Draw detections on frame
     processed_frame = frame.copy()
     
-    # Draw faces
+    # Get scaling factors
+    h, w = frame.shape[:2]
+    scale_x = w / 320  # Assuming API processes at 320 width
+    scale_y = h / 240  # Assuming API processes at 240 height
+    
+    # Draw faces with scaled coordinates
     for face in data.get("faces", []):
         x1, y1, x2, y2 = face["bbox"]
+        # Scale coordinates back to original frame size
+        x1, x2 = int(x1 * scale_x), int(x2 * scale_x)
+        y1, y2 = int(y1 * scale_y), int(y2 * scale_y)
         cv2.rectangle(processed_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.putText(processed_frame, face["label"], (x1, y1-10), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     
-    # Draw objects
+    # Draw objects with scaled coordinates
     for obj in data.get("detected_objects", []):
         x1, y1, x2, y2 = obj["bbox"]
+        # Scale coordinates back to original frame size
+        x1, x2 = int(x1 * scale_x), int(x2 * scale_x)
+        y1, y2 = int(y1 * scale_y), int(y2 * scale_y)
         cv2.rectangle(processed_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
         cv2.putText(processed_frame, f"{obj['label']}", (x1, y1-10),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
