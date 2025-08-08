@@ -27,9 +27,6 @@ import cv2
 from dotenv import load_dotenv
 import os
 
-
-
-
 load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
@@ -37,8 +34,8 @@ logging.basicConfig(
 )
 ROOT_DATABASE_DIR = os.getenv('ROOT_DATABASE_DIR')
 DEEPF_DATABASE_DIR = os.getenv('DEEPF_DATABASE_DIR')
+
 # Define CNN model class
-# Define CNN model class (updated for image input)
 class TransferCNN(nn.Module):
     def __init__(self, num_classes=2, pretrained=True):
         super(TransferCNN, self).__init__()
@@ -48,10 +45,11 @@ class TransferCNN(nn.Module):
             nn.Dropout(0.5),
             nn.Linear(num_features, num_classes)
         )
+    
     def forward(self, x):
         return self.backbone(x)
 
-# Load model (remove scaler)
+# Load model
 CNN_MODEL_PATH = os.path.join("model", "transfer_learning_cnn.pth")
 USE_CNN = os.path.exists(CNN_MODEL_PATH)
 
@@ -62,58 +60,77 @@ if USE_CNN:
     cnn_model.eval()
     logger.info("✅ Image-based CNN model loaded")
     
-    # Image preprocessing transform
+    # Pre-allocate transform to avoid recreation
     transform = transforms.Compose([
         transforms.ToPILImage(),
         transforms.Resize(256),
         transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                             std=[0.229, 0.224, 0.225])
+                         std=[0.229, 0.224, 0.225])
     ])
 else:
     logger.warning("⚠️ CNN model not found, using fallback methods")
 
 app = FastAPI()
-# Global objects
+
+# Global objects with thread-safe structures
 frame_processor = DatasetProcessor()
 yolo_lock = threading.Lock()
 last_detected_objects = []
+object_detection_queue = deque(maxlen=1)  # Only keep latest frame for object detection
 
 # CORS configuration
 app.add_middleware(
-  CORSMiddleware,
-  allow_origins=["*"],
-  allow_credentials=True,
-  allow_methods=["*"],
-  allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-#load setup
+# Load setup
 try:
-  processor = DatasetProcessor()
-  recognizer = FaceRecognizer()
-  extractor = VideoFrameExtractor()
-  logger.info(f"Setup Import Completed")
+    processor = DatasetProcessor()
+    recognizer = FaceRecognizer()
+    extractor = VideoFrameExtractor()
+    logger.info("Setup Import Completed")
 except Exception as e:
-  logger.error(f"Failed to import setup: {str(e)}")
-  raise
+    logger.error(f"Failed to import setup: {str(e)}")
+    raise
 
+# Object detection thread function
+def run_object_detection():
+    global last_detected_objects
+    while True:
+        try:
+            if object_detection_queue:
+                frame = object_detection_queue[0]
+                detections = detect_objects(frame)
+                with yolo_lock:
+                    last_detected_objects = detections
+                object_detection_queue.clear()  # Remove processed frame
+            time.sleep(0.1)  # Reduce CPU usage
+        except Exception as e:
+            logger.error(f"Object detection error: {str(e)}")
+
+# Start object detection thread
+object_detection_thread = threading.Thread(target=run_object_detection, daemon=True)
+object_detection_thread.start()
 
 @app.post("/register-face")
-def register_face(
+async def register_face(
     personName: str = Form(...),
     video: UploadFile = File(...)
 ):
     try:
-        # Validate inputs
+        # Validate and sanitize inputs
         if not personName or not video:
             return JSONResponse(
                 status_code=400,
                 content={"status": "error", "message": "Video and personName are required"}
             )
 
-        # Sanitize input
         safe_personName = "".join(c for c in personName if c.isalnum() or c in ("_", "-", " ")).rstrip().replace(" ", "_")
 
         # Define directory structure
@@ -263,63 +280,57 @@ async def delete_face(
             }
         )
 
-
-# Object detection thread
-def run_object_detection(frame):
-    global last_detected_objects
-    try:
-        detections = detect_objects(frame)
-        print(f"[YOLO DEBUG] Detected: {detections}")  # or use logger.info()
-        with yolo_lock:
-            last_detected_objects = detections
-    except Exception as e:
-        print(f"[YOLO ERROR] Failed: {e}")
-
-
 @app.websocket("/face-recognition")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     frame_count = 0
-    recognition_interval = 5
+    recognition_interval = 10  # Process face recognition every 5 frames
+    object_detection_interval = 25  # Process object detection every 15 frames
     face_reference = None
     previous_results = []
     prev_time = time.time()
+    fps_buffer = deque(maxlen=10)  # For smoothing FPS calculation
 
     try:
         while True:
             try:
-                data = await asyncio.wait_for(
-                    websocket.receive_bytes(),
-                    timeout=5.0  # Add timeout
-                )
-                # Basic validation
-                if len(data) < 10:  # Minimum expected image size
-                    raise WebSocketDisconnect(1008, "Invalid frame data")
+                # Receive frame with timeout
+                data = await asyncio.wait_for(websocket.receive_bytes(), timeout=5.0)
+                
+                if len(data) < 10:
+                    continue
+                
+                # Decode frame
                 nparr = np.frombuffer(data, np.uint8)
                 frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-                if frame is None:
+                
+                if frame is None or frame.size == 0:
                     continue
 
                 frame_count += 1
+                current_time = time.time()
+                
+                # Face detection
                 faces = frame_processor.detect_faces(frame)
                 face_roi = None
                 ml_label = "No Face for ML"
 
+                # Face processing
                 if faces:
                     x, y, w, h = faces[0]
                     face_roi = frame[y:y+h, x:x+w]
+                    
                     if face_reference is None:
                         face_reference = face_roi.copy()
 
-                    # CNN Prediction (using face ROI)
-                    if USE_CNN:
+                    # CNN Prediction (optimized)
+                    if USE_CNN and frame_count % 2 == 0:  # Only run CNN every other frame
                         try:
-                            # Preprocess image
-                            input_tensor = transform(cv2.cvtColor(face_roi, cv2.COLOR_BGR2RGB))
+                            # Convert to RGB once and reuse
+                            rgb_face = cv2.cvtColor(face_roi, cv2.COLOR_BGR2RGB)
+                            input_tensor = transform(rgb_face)
                             input_batch = input_tensor.unsqueeze(0).to(device)
                             
-                            # Inference
                             with torch.no_grad():
                                 outputs = cnn_model(input_batch)
                                 probabilities = torch.softmax(outputs, dim=1)
@@ -327,7 +338,6 @@ async def websocket_endpoint(websocket: WebSocket):
                             
                             prediction = predicted.item()
                             confidence = probabilities[0][prediction].item()
-                            
                             ml_label = f"CNN: {'CHEATING' if prediction == 1 else 'OK'} ({confidence:.2f})"
                             
                             if prediction == 1:
@@ -338,22 +348,23 @@ async def websocket_endpoint(websocket: WebSocket):
                             logger.error(f"CNN prediction error: {e}")
                             ml_label = "CNN Error"
 
-                match_score = calculate_face_match_score(face_reference, face_roi)
+                # Face matching score
+                match_score = calculate_face_match_score(face_reference, face_roi) if face_roi is not None else 0
 
+                # Face recognition (less frequent)
                 if frame_count % recognition_interval == 0 or not previous_results:
                     previous_results = []
                     for (x, y, w, h) in faces:
                         identity, similarity = FaceRecognizer.recognize_face(frame, (x, y, w, h))
-                        # logger.info(f"log identitas: {identity} {similarity}")
-                        # print(f"DEBUG - identitas: {identity} similarity: {similarity}")
                         label = f"{identity} ({similarity * 100:.1f}%)" if identity != "Unknown" else "Unknown"
                         previous_results.append(((x, y, w, h), label))       
-                else:
-                    if len(previous_results) != len(faces):
-                        previous_results = [((x, y, w, h), "Unknown") for (x, y, w, h) in faces]
+                elif len(previous_results) != len(faces):
+                    previous_results = [((x, y, w, h), "Unknown") for (x, y, w, h) in faces]
 
-                gaze = get_gaze_direction(frame)
+                # Gaze detection
+                gaze = get_gaze_direction(frame) if len(faces) == 1 else "Multiple Faces"
 
+                # Name status determination
                 if len(faces) == 0:
                     name_status = "Unknown"
                 elif len(faces) == 1:
@@ -364,16 +375,17 @@ async def websocket_endpoint(websocket: WebSocket):
                     log_to_csv("Multiple Face", "More than 1 face detected")
                     play_alarm()
 
-                if frame_count % 15 == 0:
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, run_object_detection, frame.copy())
+                # Object detection (asynchronous)
+                if frame_count % object_detection_interval == 0 and len(object_detection_queue) == 0:
+                    object_detection_queue.append(frame.copy())
 
+                # Process detected objects
+                detected_objects = []
+                alerts = []
+                
                 with yolo_lock:
                     allowed_labels = ["cell phone", "laptop", "remote"]
                     current_objects = [obj for obj in last_detected_objects if obj[0].lower() in allowed_labels]
-
-                alerts = []
-                detected_objects = []
 
                 for label, conf, x1, y1, x2, y2 in current_objects:
                     detected_objects.append({
@@ -394,6 +406,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             "message": log_message
                         })
 
+                # Gaze alerts
                 if gaze in ["Looking Down", "Looking Down (Head)", "Looking Right", "Looking Left"]:
                     alerts.append({
                         "type": "gaze", 
@@ -405,11 +418,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     log_to_csv("Gaze Cheating", gaze)
                     play_alarm()
 
-                curr_time = time.time()
-                fps = 1 / (curr_time - prev_time) if curr_time - prev_time > 0 else 0
-                prev_time = curr_time
+                # Calculate smoothed FPS
+                fps_buffer.append(1 / (current_time - prev_time) if current_time - prev_time > 0 else 0)
+                smoothed_fps = sum(fps_buffer) / len(fps_buffer) if fps_buffer else 0
+                prev_time = current_time
 
-                await websocket.send_json({
+                # Prepare response
+                response = {
                     "status": name_status,
                     "faces": [
                         {
@@ -420,10 +435,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     "gaze": gaze,
                     "match_score": float(match_score),
                     "ml_prediction": ml_label,
-                    "fps": fps,
+                    "fps": smoothed_fps,
                     "alerts": alerts,
                     "detected_objects": detected_objects
-                })
+                }
+
+                await websocket.send_json(response)
 
             except asyncio.TimeoutError:
                 continue
@@ -438,8 +455,7 @@ async def websocket_endpoint(websocket: WebSocket):
         
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "proctoring-api"}
-# app.mount("/static", StaticFiles(directory="static"), name="static")
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
     import uvicorn
