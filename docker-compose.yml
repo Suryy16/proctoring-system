@@ -1,8 +1,10 @@
+version: '3.8'
+
 services:
   proctoring-api:
     build:
       context: .
-      dockerfile: docker/Dockerfile.api
+      dockerfile: Dockerfile  # Sesuaikan jika perlu
     ports:
       - "5000:5000"
     volumes:
@@ -10,50 +12,8 @@ services:
       - ./modules:/app/modules
       - ./recognition_scripts:/app/recognition_scripts
       - ./logs:/app/logs
-      - ./model:/app/model  # Add this line to mount your model directory
+      - ./model:/app/model
     environment:
       - ROOT_DATABASE_DIR=/app/database
       - DEEPF_DATABASE_DIR=processed_dataset
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; exit(0) if urllib.request.urlopen('http://localhost:5000/health').getcode() == 200 else exit(1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 30s
-
-  proctoring-ui:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.ui
-    ports:
-      - "8501:8501"
-    devices:
-      - "/dev/video0:/dev/video0"
-    volumes:
-      - ./streamlit_app.py:/app/streamlit_app.py
-      - ./database:/app/database
-      - ./modules:/app/modules
-      - ./recognition_scripts:/app/recognition_scripts
-      - ./model:/app/model  # Add this line for the UI service as well
-      - /dev/video0:/dev/video0  # Add this volume mount
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - ${XDG_RUNTIME_DIR}/pulse/native:${XDG_RUNTIME_DIR}/pulse/native
-    depends_on:
-      proctoring-api:
-        condition: service_healthy
-    environment:
-      - ROOT_DATABASE_DIR=/app/database
-      - DEEPF_DATABASE_DIR=processed_dataset
-      - IS_DOCKER=true
-      - CAMERA_INDEX=0
-      - WEBSOCKET_HOST=proctoring-api
-      - API_HOST=proctoring-api
-      - DISPLAY=${DISPLAY}
-      - PULSE_SERVER=unix:${XDG_RUNTIME_DIR}/pulse/native
-      - IP_WEBCAM_URL=http://192.168.18.30:8080/video
-    extra_hosts:
-      - "host.docker.internal:host-gateway"  # Allow access to host services
-    restart: unless-stopped
-    privileged: true
-    ipc: host

@@ -14,15 +14,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies with pinned versions
-RUN pip install --user --no-cache-dir \
-    python-multipart==0.0.6 \
-    tensorflow==2.15.0 \
-    tf-keras==2.15.0 \
-    deepface==0.0.79
+# Copy and install API requirements
+COPY requirements/requirements-api.txt .
+# Di builder stage sebelum pip install
+RUN pip install --upgrade pip && \
+    pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --user --no-cache-dir -r requirements-api.txt
 
 # Stage 2: Runtime stage
 FROM python:3.10-slim
@@ -41,7 +39,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
-COPY . .
+# Copy only necessary files for API
+COPY serviceAPI.py .
+COPY modules /app/modules
+COPY recognition_scripts /app/recognition_scripts
 
 # Create required directories
 RUN mkdir -p /app/database/dataset \

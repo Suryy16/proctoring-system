@@ -5,3 +5,4 @@ pandas==2.3.1
 Pillow==11.3.0
 requests==2.32.4
 websockets==15.0.1
+python-dotenv==1.1.1
