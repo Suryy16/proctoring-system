@@ -76,8 +76,8 @@ docker-compose up --build
 
 ## 📄 Lisensi
 
-Hak cipta © 2025 - Student Employee Kelompok 4
-Proyek ini dilisensikan di bawah MIT License. Lihat File LICENSE untuk detail lebih lanjut.
+* Hak cipta © 2025 - Student Employee Kelompok 4
+* Proyek ini dilisensikan di bawah MIT License. Lihat File LICENSE untuk detail lebih lanjut.
 
 
 
