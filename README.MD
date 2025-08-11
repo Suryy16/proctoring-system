@@ -29,7 +29,7 @@ API akan otomatis dibangun dan dijalankan.
 python -m venv ui-venv
 ```
 
-4. Aktifkan virtual environment:
+3. Aktifkan virtual environment:
 
 **Windows:**
 
@@ -43,13 +43,13 @@ python -m venv ui-venv
 source ui-venv/bin/activate
 ```
 
-5. Install dependencies:
+4. Install dependencies:
 
 ```bash
 pip install -r requirements/requirements-ui.txt
 ```
 
-6. Jalankan aplikasi Streamlit:
+5. Jalankan aplikasi Streamlit:
 
 ```bash
 streamlit run streamlit_app.py
@@ -76,6 +76,7 @@ docker-compose up --build
 
 ## 📄 Lisensi
 
+Hak cipta © 2025 - Student Employee Kelompok 4
 Proyek ini dilisensikan di bawah MIT License. Lihat File LICENSE untuk detail lebih lanjut.
 
 
